@@ -423,7 +423,7 @@ class JobScraper:
     def scrape_microsoft_jobs(self, query, location=""):
         """Scrape Microsoft Careers using their internal API"""
         try:
-            url = "https://careers.microsoft.com/widgets"
+            url = "https://careers.microsoft.com/"
             params = {
                 'lang': 'en_us',
                 'deviceType': 'desktop',
