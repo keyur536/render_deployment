@@ -369,18 +369,16 @@
 
 import requests
 from bs4 import BeautifulSoup
-import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime
 import os
-import time
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Environment variables for API keys
-SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "a2a35764485dca1d60f2335f58a39770269393d1e21117c64b09094884e497ec")
+SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "your_serpapi_key")
 
 class JobScraper:
     def __init__(self):
@@ -406,22 +404,6 @@ class JobScraper:
             print(f"Google Jobs Error: {e}")
             return []
 
-    def scrape_indeed(self, query, location=""):
-        """Scrape Indeed directly"""
-        try:
-            base_url = "https://www.indeed.com"
-            search_query = query.replace(" ", "+")
-            location_query = location.replace(" ", "+") if location else ""
-            url = f"{base_url}/jobs?q={search_query}&l={location_query}"
-
-            response = requests.get(url, headers=self.scraping_headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            return [self._format_indeed_job(job) for job in soup.select('div.cardOutline, div.job_seen_beacon')]
-        except Exception as e:
-            print(f"Indeed Scraping Error: {e}")
-            return []
-
     def scrape_linkedin(self, query, location=""):
         """Scrape LinkedIn directly"""
         try:
@@ -439,32 +421,43 @@ class JobScraper:
 
     # ----------- Microsoft Jobs API -----------
     def scrape_microsoft_jobs(self, query, location=""):
-        """Scrape Microsoft Careers website"""
+        """Scrape Microsoft Careers using their internal API"""
         try:
-            url = "https://careers.microsoft.com/professionals/us/en/search-results"
+            url = "https://careers.microsoft.com/widgets"
             params = {
-                "q": query,
-                "location": location
+                'lang': 'en_us',
+                'deviceType': 'desktop',
+                'country': 'us',
+                'pageName': 'search-results',
+                'sortBy': 'Most recent',
+                'q': query,
+                'location': location
             }
-            
-            response = requests.get(url, params=params, headers=self.scraping_headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
+
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                **self.scraping_headers
+            }
+
+            response = requests.post(url, headers=headers, data=params)
+            response.raise_for_status()
             
             jobs = []
-            for job in soup.select('li.job-item'):
-                try:
-                    jobs.append({
-                        "title": job.select_one('h3').text.strip(),
-                        "company": "Microsoft",
-                        "location": job.select_one('.job-location').text.strip(),
-                        "link": f"https://careers.microsoft.com{job.select_one('a')['href']}",
-                        "source": "Microsoft Careers"
-                    })
-                except Exception as e:
-                    print(f"Error formatting Microsoft job: {e}")
+            data = response.json()
+            
+            for job in data.get('jobs', []):
+                jobs.append({
+                    "title": job.get('title'),
+                    "company": "Microsoft",
+                    "location": ", ".join(job.get('locations', [])),
+                    "link": f"https://careers.microsoft.com{job.get('applyUrl')}",
+                    "source": "Microsoft Careers"
+                })
+            
             return jobs
+
         except Exception as e:
-            print(f"Microsoft Jobs Error: {e}")
+            print(f"Microsoft Jobs API Error: {e}")
             return []
 
     # ----------- Formatting Methods -----------
@@ -476,19 +469,6 @@ class JobScraper:
             "link": f"https://www.google.com/search?q={job.get('title').replace(' ', '+')}+jobs&ibp=htl;jobs#htidocid={job.get('job_id')}",
             "source": "Google Jobs"
         }
-
-    def _format_indeed_job(self, job):
-        try:
-            return {
-                "title": job.select_one('h2.jobTitle a').text.strip(),
-                "company": job.select_one('span.companyName').text.strip(),
-                "location": job.select_one('div.companyLocation').text.strip(),
-                "link": f"https://www.indeed.com/viewjob?jk={job.get('data-jk')}",
-                "source": "Indeed"
-            }
-        except Exception as e:
-            print(f"Format Indeed Error: {e}")
-            return None
 
     def _format_linkedin_job(self, job):
         try:
@@ -516,12 +496,11 @@ def get_jobs():
     try:
         # Web scraping sources
         google_jobs = scraper.scrape_google_jobs(query, location)
-        indeed_jobs = list(filter(None, scraper.scrape_indeed(query, location)))
         linkedin_jobs = list(filter(None, scraper.scrape_linkedin(query, location)))
         microsoft_jobs = scraper.scrape_microsoft_jobs(query, location)
         
         # Combine all results
-        all_jobs = google_jobs + indeed_jobs + linkedin_jobs + microsoft_jobs
+        all_jobs = google_jobs + linkedin_jobs + microsoft_jobs
         
         return jsonify({
             "timestamp": datetime.now().isoformat(),
