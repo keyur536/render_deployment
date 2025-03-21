@@ -1,7 +1,7 @@
 flask-cors==3.0.10
 gunicorn==20.1.0
-Werkzeug==2.0.3
-Flask==3.0.2
+werkzeug==2.0.3
+flask==2.0.3  # Downgraded to match Werkzeug 2.x
 requests==2.31.0
 beautifulsoup4==4.12.3
 python-dotenv==1.0.0
