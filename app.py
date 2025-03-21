@@ -378,7 +378,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Environment variables for API keys
-SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "your_serpapi_key")
+SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "a2a35764485dca1d60f2335f58a39770269393d1e21117c64b09094884e497ec")
 
 class JobScraper:
     def __init__(self):
@@ -423,7 +423,7 @@ class JobScraper:
     def scrape_microsoft_jobs(self, query, location=""):
         """Scrape Microsoft Careers using their internal API"""
         try:
-            url = "https://careers.microsoft.com/"
+            url = "https://careers.microsoft.com/widgets"
             params = {
                 'lang': 'en_us',
                 'deviceType': 'desktop',
@@ -460,6 +460,44 @@ class JobScraper:
             print(f"Microsoft Jobs API Error: {e}")
             return []
 
+    # ----------- Naukri Manual Scraping -----------
+    def scrape_naukri_jobs(self, query, location=""):
+        """Scrape Naukri.com jobs with dynamic query and location"""
+        try:
+            # Format parameters for URL
+            formatted_query = query.replace(' ', '-').lower()
+            formatted_location = location.replace(' ', '-').lower()
+            
+            url = f"https://www.naukri.com/{formatted_query}-jobs-in-{formatted_location}?k={query.replace(' ', '%20')}&l={location.replace(' ', '%20')}"
+            
+            headers = {
+                **self.scraping_headers,
+                'Referer': 'https://www.naukri.com/'
+            }
+            
+            response = requests.get(url, headers=headers)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            jobs = []
+            for job in soup.select('article.jobTuple'):
+                try:
+                    jobs.append({
+                        "title": job.select_one('a.title')['title'].strip(),
+                        "company": job.select_one('div.companyInfo > a').text.strip(),
+                        "location": job.select_one('div.location').text.strip(),
+                        "link": job.select_one('a.title')['href'].split('?')[0],
+                        "source": "Naukri"
+                    })
+                except Exception as e:
+                    print(f"Error parsing Naukri job: {e}")
+                    continue
+            
+            return jobs
+        
+        except Exception as e:
+            print(f"Naukri Scraping Error: {e}")
+            return []
+
     # ----------- Formatting Methods -----------
     def _format_google_job(self, job):
         return {
@@ -494,13 +532,14 @@ def get_jobs():
     scraper = JobScraper()
     
     try:
-        # Web scraping sources
+        # Get jobs from all sources
+        naukri_jobs = scraper.scrape_naukri_jobs(query, location)
         google_jobs = scraper.scrape_google_jobs(query, location)
         linkedin_jobs = list(filter(None, scraper.scrape_linkedin(query, location)))
         microsoft_jobs = scraper.scrape_microsoft_jobs(query, location)
         
-        # Combine all results
-        all_jobs = google_jobs + linkedin_jobs + microsoft_jobs
+        # Combine results with Naukri on top
+        all_jobs = naukri_jobs + google_jobs + linkedin_jobs + microsoft_jobs
         
         return jsonify({
             "timestamp": datetime.now().isoformat(),
