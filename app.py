@@ -163,30 +163,36 @@
 #     # Use PORT environment variable for cloud deployment
 #     port = int(os.environ.get("PORT", 5000))
 #     app.run(debug=False, host='0.0.0.0', port=port)
-
 import requests
 from bs4 import BeautifulSoup
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import re
 from datetime import datetime
 import os
-import time  # For rate limiting
+import time
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Get API key from environment variable
+# Environment variables for API keys
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "a2a35764485dca1d60f2335f58a39770269393d1e21117c64b09094884e497ec")
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "d21c1eee73mshbc332e6681e8810p1ef5afjsn6e665e83b7d6")
+ACTIVE_JOBS_HOST = "upwork-jobs-api2.p.rapidapi.com"
 
 class JobScraper:
     def __init__(self):
-        self.base_headers = {
+        self.scraping_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+        
+        self.api_headers = {
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": ACTIVE_JOBS_HOST
         }
 
+    # ----------- Web Scraping Methods -----------
     def scrape_google_jobs(self, query, location=""):
         """Scrape Google Jobs using SerpAPI"""
         url = "https://serpapi.com/search"
@@ -198,123 +204,131 @@ class JobScraper:
         try:
             response = requests.get(url, params=params)
             data = response.json()
-
-            jobs = []
-            for job in data.get("jobs_results", []):
-                jobs.append({
-                    "title": job.get("title"),
-                    "company": job.get("company_name"),
-                    "location": job.get("location"),
-                    "link": f"https://www.google.com/search?q={query.replace(' ', '+')}+jobs+{location.replace(' ', '+')}&ibp=htl;jobs#htidocid={job.get('job_id')}",
-                    "source": "Google Jobs"
-                })
-            return jobs
+            return [self._format_google_job(job) for job in data.get("jobs_results", [])]
         except Exception as e:
-            print(f"Google Jobs Error: {str(e)}")
+            print(f"Google Jobs Error: {e}")
             return []
 
     def scrape_indeed(self, query, location=""):
-        """Scrape Indeed for job listings with enhanced anti-bot measures"""
+        """Scrape Indeed directly (fallback)"""
         try:
             base_url = "https://www.indeed.com"
             search_query = query.replace(" ", "+")
             location_query = location.replace(" ", "+") if location else ""
             url = f"{base_url}/jobs?q={search_query}&l={location_query}"
 
-            # Enhanced headers for Indeed
-            headers = {
-                **self.base_headers,
-                'Referer': 'https://www.google.com/',
-                'DNT': '1'
-            }
-
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()  # Check for HTTP errors
-
+            response = requests.get(url, headers=self.scraping_headers)
             soup = BeautifulSoup(response.text, 'html.parser')
-            job_listings = []
-
-            # Updated CSS selector for Indeed's current layout
-            job_cards = soup.select('div.cardOutline, div.job_seen_beacon')
-
-            for job in job_cards:
-                try:
-                    title_elem = job.select_one('h2.jobTitle a')
-                    company_elem = job.select_one('span.companyName')
-                    location_elem = job.select_one('div.companyLocation')
-                    
-                    # Validate elements before processing
-                    if not all([title_elem, company_elem, location_elem]):
-                        continue
-
-                    job_id = job.get('data-jk') or job.get('id', '').split('-')[-1]
-                    
-                    job_listings.append({
-                        'title': title_elem.text.strip(),
-                        'company': company_elem.text.strip(),
-                        'location': location_elem.text.strip(),
-                        'link': f"{base_url}/viewjob?jk={job_id}",
-                        'source': 'Indeed'
-                    })
-                    
-                    # Rate limiting to avoid blocking
-                    time.sleep(0.5)
-
-                except Exception as e:
-                    print(f"Indeed Job Processing Error: {str(e)}")
-                    continue
-
-            return job_listings
-
-        except requests.HTTPError as e:
-            print(f"Indeed HTTP Error ({e.response.status_code}): {url}")
-            return []
+            
+            return [self._format_indeed_job(job) for job in soup.select('div.cardOutline, div.job_seen_beacon')]
         except Exception as e:
-            print(f"Indeed General Error: {str(e)}")
+            print(f"Indeed Scraping Error: {e}")
             return []
 
     def scrape_linkedin(self, query, location=""):
-        """Scrape LinkedIn for job listings"""
+        """Scrape LinkedIn directly"""
         try:
             search_query = query.replace(" ", "%20")
             location_query = location.replace(" ", "%20") if location else ""
             url = f"https://www.linkedin.com/jobs/search/?keywords={search_query}&location={location_query}"
 
-            response = requests.get(url, headers=self.base_headers)
+            response = requests.get(url, headers=self.scraping_headers)
             soup = BeautifulSoup(response.text, 'html.parser')
-
-            job_listings = []
-            job_cards = soup.select('div.base-card')
-
-            for job in job_cards:
-                try:
-                    title = job.select_one('h3.base-search-card__title').text.strip()
-                    company = job.select_one('h4.base-search-card__subtitle').text.strip()
-                    location = job.select_one('span.job-search-card__location').text.strip()
-                    link = job.select_one('a.base-card__full-link')['href']
-
-                    job_listings.append({
-                        'title': title,
-                        'company': company,
-                        'location': location,
-                        'link': link,
-                        'source': 'LinkedIn'
-                    })
-                except Exception as e:
-                    print(f"LinkedIn Job Error: {str(e)}")
-                    continue
-
-            return job_listings
+            
+            return [self._format_linkedin_job(job) for job in soup.select('div.base-card')]
         except Exception as e:
-            print(f"LinkedIn General Error: {str(e)}")
+            print(f"LinkedIn Error: {e}")
             return []
 
-@app.route('/', methods=['GET'])
-def index():
-    return jsonify({
-        "status": "online",
-        "message": "Job Scraper API is running. Use /api/jobs?query=JOBNAME&location=LOCATION to search."
-    })
+    # ----------- API Methods -----------
+    def scrape_active_jobs_db(self, query, location=""):
+        """Active Jobs DB API implementation"""
+        url = "https://upwork-jobs-api2.p.rapidapi.com/active-freelance-7d"
+        querystring = {
+            "search": f'"{query}"',
+            "location_filter": f'"{location}"' if location else ""
+        }
+        try:
+            response = requests.get(url, headers=self.api_headers, params=querystring)
+            response.raise_for_status()
+            return [self._format_active_job(job) for job in response.json().get('data', [])]
+        except Exception as e:
+            print(f"Active Jobs DB Error: {e}")
+            return []
+
+    def scrape_indeed_api(self, query, location=""):
+        """Indeed API via RapidAPI"""
+        url = "https://apidojo-indeed-search.p.rapidapi.com/apidojo"
+        params = {
+            "searchterms": query,
+            "location": location,
+            "sort": "relevance",
+            "country": "us",
+            "radius": "50"
+        }
+        try:
+            response = requests.get(url, headers={
+                **self.api_headers,
+                "x-rapidapi-host": "apidojo-indeed-search.p.rapidapi.com"
+            }, params=params)
+            return [self._format_indeed_api_job(job) for job in response.json().get("hits", [])]
+        except Exception as e:
+            print(f"Indeed API Error: {e}")
+            return []
+
+    # ----------- Formatting Methods -----------
+    def _format_google_job(self, job):
+        return {
+            "title": job.get("title"),
+            "company": job.get("company_name"),
+            "location": job.get("location"),
+            "link": f"https://www.google.com/search?q={job.get('title').replace(' ', '+')}+jobs&ibp=htl;jobs#htidocid={job.get('job_id')}",
+            "source": "Google Jobs"
+        }
+
+    def _format_indeed_job(self, job):
+        try:
+            return {
+                "title": job.select_one('h2.jobTitle a').text.strip(),
+                "company": job.select_one('span.companyName').text.strip(),
+                "location": job.select_one('div.companyLocation').text.strip(),
+                "link": f"https://www.indeed.com/viewjob?jk={job.get('data-jk')}",
+                "source": "Indeed"
+            }
+        except Exception as e:
+            print(f"Format Indeed Error: {e}")
+            return None
+
+    def _format_linkedin_job(self, job):
+        try:
+            return {
+                "title": job.select_one('h3.base-search-card__title').text.strip(),
+                "company": job.select_one('h4.base-search-card__subtitle').text.strip(),
+                "location": job.select_one('span.job-search-card__location').text.strip(),
+                "link": job.select_one('a.base-card__full-link')['href'],
+                "source": "LinkedIn"
+            }
+        except Exception as e:
+            print(f"Format LinkedIn Error: {e}")
+            return None
+
+    def _format_active_job(self, job):
+        return {
+            "title": job.get("job_title"),
+            "company": job.get("company_name"),
+            "location": job.get("location"),
+            "link": job.get("job_url"),
+            "source": "ActiveJobsDB"
+        }
+
+    def _format_indeed_api_job(self, job):
+        return {
+            "title": job.get("jobTitle"),
+            "company": job.get("companyName"),
+            "location": job.get("location"),
+            "link": job.get("url"),
+            "source": "Indeed API"
+        }
 
 @app.route('/api/jobs', methods=['GET'])
 def get_jobs():
@@ -325,24 +339,29 @@ def get_jobs():
         return jsonify({"error": "Query parameter is required"}), 400
 
     scraper = JobScraper()
-
-    # Scrape from all sources
+    
     try:
+        # Web scraping sources
         google_jobs = scraper.scrape_google_jobs(query, location)
-        indeed_jobs = scraper.scrape_indeed(query, location)
-        linkedin_jobs = scraper.scrape_linkedin(query, location)
+        indeed_jobs = list(filter(None, scraper.scrape_indeed(query, location)))
+        linkedin_jobs = list(filter(None, scraper.scrape_linkedin(query, location)))
+        
+        # API sources
+        active_jobs = scraper.scrape_active_jobs_db(query, location)
+        indeed_api_jobs = scraper.scrape_indeed_api(query, location)
+        
+        # Combine all results
+        all_jobs = google_jobs + indeed_jobs + linkedin_jobs + active_jobs + indeed_api_jobs
+        
+        return jsonify({
+            "timestamp": datetime.now().isoformat(),
+            "query": query,
+            "location": location,
+            "count": len(all_jobs),
+            "jobs": all_jobs
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-    all_jobs = google_jobs + indeed_jobs + linkedin_jobs
-
-    return jsonify({
-        "timestamp": datetime.now().isoformat(),
-        "query": query,
-        "location": location,
-        "count": len(all_jobs),
-        "jobs": all_jobs
-    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
