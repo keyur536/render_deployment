@@ -373,158 +373,107 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Environment variables for API keys
+# Environment variables
 SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "a2a35764485dca1d60f2335f58a39770269393d1e21117c64b09094884e497ec")
 
 class JobScraper:
     def __init__(self):
+        self.timeout = 10  # seconds
         self.scraping_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9'
         }
 
-    # ----------- Web Scraping Methods -----------
-    def scrape_google_jobs(self, query, location=""):
-        """Scrape Google Jobs using SerpAPI"""
-        url = "https://serpapi.com/search"
-        params = {
-            "engine": "google_jobs",
-            "q": f"{query} jobs {location}",
-            "api_key": SERPAPI_KEY
-        }
-        try:
-            response = requests.get(url, params=params)
-            data = response.json()
-            return [self._format_google_job(job) for job in data.get("jobs_results", [])]
-        except Exception as e:
-            print(f"Google Jobs Error: {e}")
-            return []
-
-    def scrape_linkedin(self, query, location=""):
-        """Scrape LinkedIn directly"""
-        try:
-            search_query = query.replace(" ", "%20")
-            location_query = location.replace(" ", "%20") if location else ""
-            url = f"https://www.linkedin.com/jobs/search/?keywords={search_query}&location={location_query}"
-
-            response = requests.get(url, headers=self.scraping_headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            return [self._format_linkedin_job(job) for job in soup.select('div.base-card')]
-        except Exception as e:
-            print(f"LinkedIn Error: {e}")
-            return []
-
-    # ----------- Microsoft Jobs API -----------
-    def scrape_microsoft_jobs(self, query, location=""):
-        """Scrape Microsoft Careers using their internal API"""
-        try:
-            url = "https://careers.microsoft.com/widgets"
-            params = {
-                'lang': 'en_us',
-                'deviceType': 'desktop',
-                'country': 'us',
-                'pageName': 'search-results',
-                'sortBy': 'Most recent',
-                'q': query,
-                'location': location
-            }
-
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                **self.scraping_headers
-            }
-
-            response = requests.post(url, headers=headers, data=params)
-            response.raise_for_status()
-            
-            jobs = []
-            data = response.json()
-            
-            for job in data.get('jobs', []):
-                jobs.append({
-                    "title": job.get('title'),
-                    "company": "Microsoft",
-                    "location": ", ".join(job.get('locations', [])),
-                    "link": f"https://careers.microsoft.com{job.get('applyUrl')}",
-                    "source": "Microsoft Careers"
-                })
-            
-            return jobs
-
-        except Exception as e:
-            print(f"Microsoft Jobs API Error: {e}")
-            return []
-
-    # ----------- Naukri Manual Scraping -----------
     def scrape_naukri_jobs(self, query, location=""):
-        """Scrape Naukri.com jobs with dynamic query and location"""
+        """Priority scraper with Naukri.com results first"""
         try:
-            # Format parameters for URL
             formatted_query = query.replace(' ', '-').lower()
             formatted_location = location.replace(' ', '-').lower()
+            url = f"https://www.naukri.com/{formatted_query}-jobs-in-{formatted_location}"
             
-            url = f"https://www.naukri.com/{formatted_query}-jobs-in-{formatted_location}?k={query.replace(' ', '%20')}&l={location.replace(' ', '%20')}"
-            
-            headers = {
+            response = requests.get(url, headers={
                 **self.scraping_headers,
                 'Referer': 'https://www.naukri.com/'
-            }
+            }, timeout=self.timeout)
             
-            response = requests.get(url, headers=headers)
             soup = BeautifulSoup(response.text, 'html.parser')
-            
             jobs = []
-            for job in soup.select('article.jobTuple'):
+            
+            for job in soup.select('article.jobTuple:not(.promoted)'):  # Exclude promoted listings
                 try:
                     jobs.append({
-                        "title": job.select_one('a.title')['title'].strip(),
+                        "title": job.select_one('a.title').text.strip(),
                         "company": job.select_one('div.companyInfo > a').text.strip(),
                         "location": job.select_one('div.location').text.strip(),
                         "link": job.select_one('a.title')['href'].split('?')[0],
                         "source": "Naukri"
                     })
                 except Exception as e:
-                    print(f"Error parsing Naukri job: {e}")
-                    continue
-            
-            return jobs
+                    print(f"Naukri parse error: {e}")
+            return jobs[:15]  # Return first 15 relevant results
         
         except Exception as e:
-            print(f"Naukri Scraping Error: {e}")
+            print(f"Naukri failed: {str(e)}")
             return []
 
-    # ----------- Formatting Methods -----------
-    def _format_google_job(self, job):
-        return {
-            "title": job.get("title"),
-            "company": job.get("company_name"),
-            "location": job.get("location"),
-            "link": f"https://www.google.com/search?q={job.get('title').replace(' ', '+')}+jobs&ibp=htl;jobs#htidocid={job.get('job_id')}",
-            "source": "Google Jobs"
-        }
-
-    def _format_linkedin_job(self, job):
+    def scrape_google_jobs(self, query, location=""):
+        """Google Jobs API integration"""
         try:
-            return {
-                "title": job.select_one('h3.base-search-card__title').text.strip(),
-                "company": job.select_one('h4.base-search-card__subtitle').text.strip(),
-                "location": job.select_one('span.job-search-card__location').text.strip(),
-                "link": job.select_one('a.base-card__full-link')['href'],
-                "source": "LinkedIn"
+            params = {
+                "engine": "google_jobs",
+                "q": f"{query} jobs {location}",
+                "api_key": SERPAPI_KEY
             }
+            response = requests.get("https://serpapi.com/search", 
+                                  params=params, 
+                                  timeout=self.timeout)
+            return [{
+                "title": job.get("title"),
+                "company": job.get("company_name"),
+                "location": job.get("location"),
+                "link": f"https://www.google.com/search?q={query}+jobs+{location}&ibp=htl;jobs",
+                "source": "Google Jobs"
+            } for job in response.json().get("jobs_results", [])[:10]]  # Top 10 results
+        
         except Exception as e:
-            print(f"Format LinkedIn Error: {e}")
-            return None
+            print(f"Google failed: {str(e)}")
+            return []
+
+    def scrape_linkedin_jobs(self, query, location=""):
+        """LinkedIn Jobs scraper"""
+        try:
+            url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={query}&location={location}"
+            response = requests.get(url, headers=self.scraping_headers, timeout=self.timeout)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            jobs = []
+            for job in soup.select('li'):
+                try:
+                    jobs.append({
+                        "title": job.select_one('h3.base-search-card__title').text.strip(),
+                        "company": job.select_one('h4.base-search-card__subtitle').text.strip(),
+                        "location": job.select_one('span.job-search-card__location').text.strip(),
+                        "link": job.select_one('a.base-card__full-link')['href'],
+                        "source": "LinkedIn"
+                    })
+                except Exception as e:
+                    print(f"LinkedIn parse error: {e}")
+            return jobs[:10]  # Top 10 results
+        
+        except Exception as e:
+            print(f"LinkedIn failed: {str(e)}")
+            return []
 
 @app.route('/api/jobs', methods=['GET'])
 def get_jobs():
-    query = request.args.get('query', '')
-    location = request.args.get('location', '')
+    """Endpoint with prioritized results"""
+    query = request.args.get('query', '').strip()
+    location = request.args.get('location', '').strip()
 
     if not query:
         return jsonify({"error": "Query parameter is required"}), 400
@@ -532,14 +481,25 @@ def get_jobs():
     scraper = JobScraper()
     
     try:
-        # Get jobs from all sources
-        naukri_jobs = scraper.scrape_naukri_jobs(query, location)
-        google_jobs = scraper.scrape_google_jobs(query, location)
-        linkedin_jobs = list(filter(None, scraper.scrape_linkedin(query, location)))
-        microsoft_jobs = scraper.scrape_microsoft_jobs(query, location)
+        with ThreadPoolExecutor() as executor:
+            # Run all scrapers in parallel
+            futures = {
+                'naukri': executor.submit(scraper.scrape_naukri_jobs, query, location),
+                'google': executor.submit(scraper.scrape_google_jobs, query, location),
+                'linkedin': executor.submit(scraper.scrape_linkedin_jobs, query, location)
+            }
+            
+            results = {
+                name: future.result(timeout=15)
+                for name, future in futures.items()
+            }
         
-        # Combine results with Naukri on top
-        all_jobs = naukri_jobs + google_jobs + linkedin_jobs + microsoft_jobs
+        # Combine results with Naukri first
+        all_jobs = (
+            results['naukri'] + 
+            results['google'] + 
+            results['linkedin']
+        )
         
         return jsonify({
             "timestamp": datetime.now().isoformat(),
@@ -548,9 +508,201 @@ def get_jobs():
             "count": len(all_jobs),
             "jobs": all_jobs
         })
+        
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": "Job search failed",
+            "details": str(e)
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
+
+# import requests
+# from bs4 import BeautifulSoup
+# from flask import Flask, request, jsonify
+# from flask_cors import CORS
+# from datetime import datetime
+# import os
+
+# app = Flask(__name__)
+# CORS(app, resources={r"/api/*": {"origins": "*"}})
+
+# # Environment variables for API keys
+# SERPAPI_KEY = os.environ.get("SERPAPI_KEY", "a2a35764485dca1d60f2335f58a39770269393d1e21117c64b09094884e497ec")
+
+# class JobScraper:
+#     def __init__(self):
+#         self.scraping_headers = {
+#             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+#             'Accept-Language': 'en-US,en;q=0.9'
+#         }
+
+#     # ----------- Web Scraping Methods -----------
+#     def scrape_google_jobs(self, query, location=""):
+#         """Scrape Google Jobs using SerpAPI"""
+#         url = "https://serpapi.com/search"
+#         params = {
+#             "engine": "google_jobs",
+#             "q": f"{query} jobs {location}",
+#             "api_key": SERPAPI_KEY
+#         }
+#         try:
+#             response = requests.get(url, params=params)
+#             data = response.json()
+#             return [self._format_google_job(job) for job in data.get("jobs_results", [])]
+#         except Exception as e:
+#             print(f"Google Jobs Error: {e}")
+#             return []
+
+#     def scrape_linkedin(self, query, location=""):
+#         """Scrape LinkedIn directly"""
+#         try:
+#             search_query = query.replace(" ", "%20")
+#             location_query = location.replace(" ", "%20") if location else ""
+#             url = f"https://www.linkedin.com/jobs/search/?keywords={search_query}&location={location_query}"
+
+#             response = requests.get(url, headers=self.scraping_headers)
+#             soup = BeautifulSoup(response.text, 'html.parser')
+            
+#             return [self._format_linkedin_job(job) for job in soup.select('div.base-card')]
+#         except Exception as e:
+#             print(f"LinkedIn Error: {e}")
+#             return []
+
+#     # ----------- Microsoft Jobs API -----------
+#     def scrape_microsoft_jobs(self, query, location=""):
+#         """Scrape Microsoft Careers using their internal API"""
+#         try:
+#             url = "https://careers.microsoft.com/widgets"
+#             params = {
+#                 'lang': 'en_us',
+#                 'deviceType': 'desktop',
+#                 'country': 'us',
+#                 'pageName': 'search-results',
+#                 'sortBy': 'Most recent',
+#                 'q': query,
+#                 'location': location
+#             }
+
+#             headers = {
+#                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+#                 **self.scraping_headers
+#             }
+
+#             response = requests.post(url, headers=headers, data=params)
+#             response.raise_for_status()
+            
+#             jobs = []
+#             data = response.json()
+            
+#             for job in data.get('jobs', []):
+#                 jobs.append({
+#                     "title": job.get('title'),
+#                     "company": "Microsoft",
+#                     "location": ", ".join(job.get('locations', [])),
+#                     "link": f"https://careers.microsoft.com{job.get('applyUrl')}",
+#                     "source": "Microsoft Careers"
+#                 })
+            
+#             return jobs
+
+#         except Exception as e:
+#             print(f"Microsoft Jobs API Error: {e}")
+#             return []
+
+#     # ----------- Naukri Manual Scraping -----------
+#     def scrape_naukri_jobs(self, query, location=""):
+#         """Scrape Naukri.com jobs with dynamic query and location"""
+#         try:
+#             # Format parameters for URL
+#             formatted_query = query.replace(' ', '-').lower()
+#             formatted_location = location.replace(' ', '-').lower()
+            
+#             url = f"https://www.naukri.com/{formatted_query}-jobs-in-{formatted_location}?k={query.replace(' ', '%20')}&l={location.replace(' ', '%20')}"
+            
+#             headers = {
+#                 **self.scraping_headers,
+#                 'Referer': 'https://www.naukri.com/'
+#             }
+            
+#             response = requests.get(url, headers=headers)
+#             soup = BeautifulSoup(response.text, 'html.parser')
+            
+#             jobs = []
+#             for job in soup.select('article.jobTuple'):
+#                 try:
+#                     jobs.append({
+#                         "title": job.select_one('a.title')['title'].strip(),
+#                         "company": job.select_one('div.companyInfo > a').text.strip(),
+#                         "location": job.select_one('div.location').text.strip(),
+#                         "link": job.select_one('a.title')['href'].split('?')[0],
+#                         "source": "Naukri"
+#                     })
+#                 except Exception as e:
+#                     print(f"Error parsing Naukri job: {e}")
+#                     continue
+            
+#             return jobs
+        
+#         except Exception as e:
+#             print(f"Naukri Scraping Error: {e}")
+#             return []
+
+#     # ----------- Formatting Methods -----------
+#     def _format_google_job(self, job):
+#         return {
+#             "title": job.get("title"),
+#             "company": job.get("company_name"),
+#             "location": job.get("location"),
+#             "link": f"https://www.google.com/search?q={job.get('title').replace(' ', '+')}+jobs&ibp=htl;jobs#htidocid={job.get('job_id')}",
+#             "source": "Google Jobs"
+#         }
+
+#     def _format_linkedin_job(self, job):
+#         try:
+#             return {
+#                 "title": job.select_one('h3.base-search-card__title').text.strip(),
+#                 "company": job.select_one('h4.base-search-card__subtitle').text.strip(),
+#                 "location": job.select_one('span.job-search-card__location').text.strip(),
+#                 "link": job.select_one('a.base-card__full-link')['href'],
+#                 "source": "LinkedIn"
+#             }
+#         except Exception as e:
+#             print(f"Format LinkedIn Error: {e}")
+#             return None
+
+# @app.route('/api/jobs', methods=['GET'])
+# def get_jobs():
+#     query = request.args.get('query', '')
+#     location = request.args.get('location', '')
+
+#     if not query:
+#         return jsonify({"error": "Query parameter is required"}), 400
+
+#     scraper = JobScraper()
+    
+#     try:
+#         # Get jobs from all sources
+#         naukri_jobs = scraper.scrape_naukri_jobs(query, location)
+#         google_jobs = scraper.scrape_google_jobs(query, location)
+#         linkedin_jobs = list(filter(None, scraper.scrape_linkedin(query, location)))
+#         microsoft_jobs = scraper.scrape_microsoft_jobs(query, location)
+        
+#         # Combine results with Naukri on top
+#         all_jobs = naukri_jobs + google_jobs + linkedin_jobs + microsoft_jobs
+        
+#         return jsonify({
+#             "timestamp": datetime.now().isoformat(),
+#             "query": query,
+#             "location": location,
+#             "count": len(all_jobs),
+#             "jobs": all_jobs
+#         })
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+# if __name__ == '__main__':
+#     port = int(os.environ.get("PORT", 5000))
+#     app.run(debug=False, host='0.0.0.0', port=port)
