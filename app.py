@@ -396,6 +396,13 @@ class JobScraper:
             "location": "Mumbai, Maharashtra, India",
             "link": "https://www.naukri.com/job-listings-flutter-developer-mverse-technologies-mumbai-mumbai-suburban-mumbai-all-areas-0-to-2-years-100325007726",
             "source": "naukri.com"
+        },
+        {
+            "title": "Mobile App Developer In-Office Job (full time) | Location: Noida | 18 March",
+            "company": "Avaronn",
+            "location": "Mumbai, Maharashtra, India",
+            "link": "https://cuvette.tech/app/public/job/67d7c9da534b5fae43196761",
+            "source": "cuvette"
         }]
 
     def scrape_google_jobs(self, query, location=""):
